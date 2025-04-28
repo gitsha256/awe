@@ -30,22 +30,27 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// Health check route
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'Server running', uptime: process.uptime() });
 });
 
+// Debug route for waiting users
 app.get('/debug/waiting', (req, res) => {
   res.json({ waiting: waiting.length, sessionIds: waiting });
 });
 
+// OpenAI setup
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// MongoDB connection
 mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('MongoDB connected'))
   .catch((err) => console.error('MongoDB connection error:', err));
 
+// MongoDB user schema
 const userSchema = new mongoose.Schema({
   sessionId: String,
   score: Number,
@@ -54,6 +59,7 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', userSchema);
 
+// Route to get badges of a user by sessionId
 app.get('/badges/:sessionId', async (req, res) => {
   try {
     const user = await User.findOne({ sessionId: req.params.sessionId });
@@ -63,6 +69,7 @@ app.get('/badges/:sessionId', async (req, res) => {
   }
 });
 
+// Route to get leaderboard
 app.get('/leaderboard', async (req, res) => {
   try {
     const users = await User.find().sort({ score: -1 }).limit(10);
@@ -72,21 +79,26 @@ app.get('/leaderboard', async (req, res) => {
   }
 });
 
+// Session management
 const sessions = new Map();
 const waiting = [];
 const activeChats = new Set();
 
+// Socket.IO connection
 io.on('connection', (socket) => {
+  // User joins the server
   socket.on('join', (sessionId) => {
     sessions.set(sessionId, socket);
     socket.sessionId = sessionId;
 
+    // Create a new user in the database if doesn't exist
     User.findOne({ sessionId }).then((user) => {
       if (!user) {
         new User({ sessionId, score: 0, badges: [], guesses: [] }).save();
       }
     });
 
+    // Clean up disconnected users from waiting
     for (let i = waiting.length - 1; i >= 0; i--) {
       const waitingId = waiting[i];
       if (!sessions.get(waitingId) || !sessions.get(waitingId).connected) {
@@ -94,6 +106,7 @@ io.on('connection', (socket) => {
       }
     }
 
+    // If there's a match in the waiting queue, match them
     if (waiting.length > 0) {
       const partnerId = waiting.pop();
       const partnerSocket = sessions.get(partnerId);
@@ -109,6 +122,7 @@ io.on('connection', (socket) => {
       waiting.push(sessionId);
     }
 
+    // If no match after 10 seconds, match with AI
     setTimeout(() => {
       if (waiting.includes(sessionId) && sessions.get(sessionId)) {
         waiting.splice(waiting.indexOf(sessionId), 1);
@@ -118,6 +132,7 @@ io.on('connection', (socket) => {
     }, 10000);
   });
 
+  // Message handling
   socket.on('message', async ({ sessionId, text }) => {
     const socket = sessions.get(sessionId);
     const partnerId = [...sessions].find(([k, v]) => v === socket)?.[0] || 'AI';
@@ -141,6 +156,7 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Guess handling
   socket.on('guess', async ({ sessionId, partnerId, guess }) => {
     const correct = partnerId !== 'AI' === guess;
     const user = await User.findOne({ sessionId });
@@ -153,6 +169,7 @@ io.on('connection', (socket) => {
     activeChats.delete(sessionId);
   });
 
+  // Disconnect handling
   socket.on('disconnect', () => {
     sessions.delete(socket.sessionId);
     activeChats.delete(socket.sessionId);
@@ -163,6 +180,7 @@ io.on('connection', (socket) => {
   });
 });
 
+// Time-out handling every 2 minutes for active chats
 setInterval(() => {
   activeChats.forEach((sessionId) => {
     const socket = sessions.get(sessionId);
@@ -173,5 +191,6 @@ setInterval(() => {
   });
 }, 120000);
 
+// Start the server
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
