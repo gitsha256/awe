@@ -4,24 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#000000" />
-    <meta name="description" content="AWE: AI Warrior Entertainment" />
     <meta
       http-equiv="Content-Security-Policy"
       content="
         default-src 'self';
-        script-src 'self' 'unsafe-eval' https://peerjs.com;
+        script-src 'self' 'unsafe-eval';
         connect-src 'self'
-                    ws://localhost:3000
-                    http://localhost:3000
-                    ws://localhost:4000
-                    http://localhost:4000
-                    wss://peerjs.com
-                    https://peerjs.com;
+                    wss://awe-backend.onrender.com
+                    https://awe-backend.onrender.com
+                    ws://awe-backend.onrender.com
+                    http://awe-backend.onrender.com;
         style-src 'self' 'unsafe-inline';
         img-src 'self' data:;
       "
     />
-    <title>AWE</title>
+    <title>AWE: AI Warrior Entertainment</title>
   </head>
   <body>
     <div id="root"></div>
