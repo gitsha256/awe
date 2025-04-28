@@ -10,7 +10,7 @@ const app = express();
 const server = require('http').createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: [process.env.FRONTEND_URL, 'http://localhost:3000'],
     methods: ['GET', 'POST'],
     credentials: true,
   },
@@ -24,7 +24,7 @@ const peerServer = ExpressPeerServer(server, {
 app.use('/peerjs', peerServer);
 
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: [process.env.FRONTEND_URL, 'http://localhost:3000'],
   methods: ['GET', 'POST'],
   credentials: true,
 }));

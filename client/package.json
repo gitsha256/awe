@@ -2,7 +2,7 @@
   "name": "awe-client",
   "version": "1.0.0",
   "scripts": {
-    "start": "set NODE_OPTIONS=--openssl-legacy-provider && react-scripts start && open -a 'Microsoft Edge' http://localhost:3000",
+    "start": "set NODE_OPTIONS=--openssl-legacy-provider && react-scripts start && open -a 'Microsoft Edge' https://awe-sand.vercel.app/",
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
