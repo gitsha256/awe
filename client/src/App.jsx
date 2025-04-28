@@ -4,8 +4,7 @@ import Chat from './Chat';
 import Guess from './Guess';
 import VideoChat from './VideoChat';
 
-const socket = io('http://localhost:4000'); // Replace with your server URL
-
+const socket = io('https://awe-qztc.onrender.com');
 function App() {
   const [sessionId, setSessionId] = useState('');
   const [messages, setMessages] = useState([]);
