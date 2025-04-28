@@ -196,7 +196,7 @@ io.on('connection', (socket) => {
         partners.set(sessionId, 'AI');
         console.log(`Partner mapping: ${sessionId} -> AI`);
       }
-    }, 10000);
+    }, 300000);
   });
 
   // Message handling
