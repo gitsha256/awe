@@ -12,6 +12,7 @@ function Home() {
   const [badges, setBadges] = useState([]);
 
   useEffect(() => {
+    console.log('Initializing Socket.IO for sessionId:', sessionId);
     const socket = io('https://awe-qztc.onrender.com', {
       transports: ['websocket', 'polling'],
       withCredentials: true,
@@ -38,11 +39,11 @@ function Home() {
 
     socket.on('message', ({ sender, text }) => {
       console.log('Message received:', { sender, text });
-      // Handle chat messages
+      // Handle chat messages (add to UI if needed)
     });
 
     socket.on('timeUp', () => {
-      console.log('Time up');
+      console.log('Time up received');
       setState('guessing');
     });
 
@@ -53,7 +54,15 @@ function Home() {
         console.log('Transitioning to video state');
       } else {
         setState('waiting');
+        setPartnerId(null);
       }
+    });
+
+    socket.on('partnerDisconnected', () => {
+      console.log('Partner disconnected');
+      setState('waiting');
+      setPartnerId(null);
+      setError('Partner disconnected, waiting for a new match...');
     });
 
     socket.on('disconnect', () => {
@@ -62,6 +71,7 @@ function Home() {
     });
 
     return () => {
+      console.log('Cleaning up Socket.IO');
       socket.disconnect();
     };
   }, [sessionId]);
@@ -93,7 +103,11 @@ function Home() {
         <h2 className="text-2xl text-red-600">Error</h2>
         <p>{error}</p>
         <button
-          onClick={() => window.location.reload()}
+          onClick={() => {
+            setError(null);
+            setState('waiting');
+            setSessionId(uuidv4());
+          }}
           className="mt-4 bg-blue-500 text-white p-2 rounded"
         >
           Retry

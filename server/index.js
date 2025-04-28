@@ -82,36 +82,58 @@ io.on('connection', (socket) => {
   console.log('Socket.IO client connected:', socket.id);
 
   socket.on('join', (sessionId) => {
-    console.log('Join event received for sessionId:', sessionId);
+    console.log(`Join event received for sessionId: ${sessionId}, waiting list: ${waiting.length}`);
     sessions.set(sessionId, socket);
     socket.sessionId = sessionId;
 
     User.findOne({ sessionId }).then((user) => {
       if (!user) {
         new User({ sessionId, score: 0, badges: [], guesses: [] }).save();
+        console.log(`Created new user for sessionId: ${sessionId}`);
       }
     });
 
+    // Clean up waiting list (remove disconnected sockets)
+    for (let i = waiting.length - 1; i >= 0; i--) {
+      const waitingId = waiting[i];
+      if (!sessions.get(waitingId) || !sessions.get(waitingId).connected) {
+        console.log(`Removing disconnected sessionId from waiting: ${waitingId}`);
+        waiting.splice(i, 1);
+      }
+    }
+
+    // Match with another player or AI
     if (waiting.length > 0) {
       const partnerId = waiting.pop();
       const partnerSocket = sessions.get(partnerId);
-      if (partnerSocket) {
-        console.log('Matching', sessionId, 'with', partnerId);
+      if (partnerSocket && partnerSocket.connected) {
+        console.log(`Matching ${sessionId} with ${partnerId}`);
         socket.emit('matched', { partnerId, isHuman: true });
         partnerSocket.emit('matched', { partnerId: sessionId, isHuman: true });
         activeChats.add(sessionId);
         activeChats.add(partnerId);
       } else {
-        console.log('No valid partner, adding to waiting:', sessionId);
+        console.log(`Partner ${partnerId} disconnected, adding ${sessionId} to waiting`);
         waiting.push(sessionId);
       }
     } else {
-      console.log('Adding to waiting:', sessionId);
+      console.log(`No partners available, adding ${sessionId} to waiting`);
       waiting.push(sessionId);
     }
+
+    // Fallback: Match with AI after 10 seconds if still waiting
+    setTimeout(() => {
+      if (waiting.includes(sessionId) && sessions.get(sessionId)) {
+        console.log(`No human match for ${sessionId}, matching with AI`);
+        waiting.splice(waiting.indexOf(sessionId), 1);
+        socket.emit('matched', { partnerId: 'AI', isHuman: false });
+        activeChats.add(sessionId);
+      }
+    }, 10000);
   });
 
   socket.on('message', async ({ sessionId, text }) => {
+    console.log(`Message from ${sessionId}: ${text}`);
     const socket = sessions.get(sessionId);
     const partnerId = [...sessions].find(([k, v]) => v === socket)?.[0] || 'AI';
     if (partnerId === 'AI') {
@@ -127,14 +149,17 @@ io.on('connection', (socket) => {
       }
     } else {
       const partnerSocket = sessions.get(partnerId);
-      if (partnerSocket) {
+      if (partnerSocket && partnerSocket.connected) {
         partnerSocket.emit('message', { sender: sessionId, text });
+      } else {
+        console.log(`Partner ${partnerId} disconnected, notifying ${sessionId}`);
+        socket.emit('partnerDisconnected');
       }
     }
   });
 
   socket.on('guess', async ({ sessionId, partnerId, guess }) => {
-    console.log('Guess received:', { sessionId, partnerId, guess });
+    console.log(`Guess received: ${sessionId} guessed ${guess} for ${partnerId}`);
     const correct = partnerId !== 'AI' === guess;
     const user = await User.findOne({ sessionId });
     user.guesses.push({ partnerId, guess, correct });
@@ -150,19 +175,22 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    console.log('Socket.IO client disconnected:', socket.id);
+    console.log(`Socket.IO client disconnected: ${socket.id}, sessionId: ${socket.sessionId}`);
     sessions.delete(socket.sessionId);
     activeChats.delete(socket.sessionId);
     const index = waiting.indexOf(socket.sessionId);
-    if (index !== -1) waiting.splice(index, 1);
+    if (index !== -1) {
+      console.log(`Removing ${socket.sessionId} from waiting list`);
+      waiting.splice(index, 1);
+    }
   });
 });
 
 setInterval(() => {
   activeChats.forEach((sessionId) => {
     const socket = sessions.get(sessionId);
-    if (socket) {
-      console.log('Emitting timeUp for sessionId:', sessionId);
+    if (socket && socket.connected) {
+      console.log(`Emitting timeUp for sessionId: ${sessionId}`);
       socket.emit('timeUp');
       activeChats.delete(sessionId);
     }
