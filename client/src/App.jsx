@@ -5,7 +5,7 @@ import Guess from './Guess';
 import VideoChat from './VideoChat';
 
 // Initialize Socket.IO client
-const socket = io('http://localhost:4000', {
+const socket = io('https://awe-qztc.onrender.com', {
   withCredentials: true,
   transports: ['websocket', 'polling'],
   reconnection: true,
