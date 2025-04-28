@@ -6,7 +6,7 @@ function Leaderboard() {
   useEffect(() => {
     const fetchLeaderboard = async () => {
       try {
-        const res = await fetch('https://awe-qztc.onrender.com', {
+        const res = await fetch('https://awe-backend.onrender.com/leaderboard', {
           mode: 'cors',
           credentials: 'include',
         });

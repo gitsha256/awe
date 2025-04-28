@@ -11,7 +11,7 @@ function Home() {
   const [badges, setBadges] = useState([]);
 
   useEffect(() => {
-    const socket = io('https://awe-qztc.onrender.com', {
+    const socket = io('https://awe-backend.onrender.com', {
       transports: ['websocket', 'polling'],
       withCredentials: true,
     });
@@ -67,7 +67,7 @@ function Home() {
 
     const fetchBadges = async () => {
       try {
-        const res = await fetch(`https://awe-qztc.onrender.com/Badge${sessionId}`, {
+        const res = await fetch(`https://awe-backend.onrender.com/badges${sessionId}`, {
           mode: 'cors',
           credentials: 'include',
         });
