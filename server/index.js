@@ -17,7 +17,6 @@ const io = new Server(server, {
   transports: ['websocket', 'polling'],
 });
 
-// PeerJS Server
 const peerServer = ExpressPeerServer(server, {
   debug: true,
   path: '/peerjs',
@@ -31,12 +30,10 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'Server running', uptime: process.uptime() });
 });
 
-// Debug endpoint to inspect waiting list
 app.get('/debug/waiting', (req, res) => {
   res.json({ waiting: waiting.length, sessionIds: waiting });
 });
@@ -62,7 +59,6 @@ app.get('/badges/:sessionId', async (req, res) => {
     const user = await User.findOne({ sessionId: req.params.sessionId });
     res.json({ badges: user ? user.badges : [] });
   } catch (err) {
-    console.error('Error fetching badges:', err.message);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -72,7 +68,6 @@ app.get('/leaderboard', async (req, res) => {
     const users = await User.find().sort({ score: -1 }).limit(10);
     res.json(users.map((u, i) => ({ rank: i + 1, player: u.sessionId.slice(0, 8), score: u.score })));
   } catch (err) {
-    console.error('Error fetching leaderboard:', err.message);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -92,7 +87,6 @@ io.on('connection', (socket) => {
       }
     });
 
-    // Clean up waiting list
     for (let i = waiting.length - 1; i >= 0; i--) {
       const waitingId = waiting[i];
       if (!sessions.get(waitingId) || !sessions.get(waitingId).connected) {
@@ -125,6 +119,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('message', async ({ sessionId, text }) => {
+    const socket = sessions.get(sessionId);
     const partnerId = [...sessions].find(([k, v]) => v === socket)?.[0] || 'AI';
     if (partnerId === 'AI') {
       try {

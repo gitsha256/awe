@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-function Chat({ socket, sessionId, messages, setGamePhase }) {
+function Chat({ socket, sessionId, messages }) {
   const [message, setMessage] = useState('');
   const [timeLeft, setTimeLeft] = useState(120); // 2 minutes
 
@@ -18,13 +18,6 @@ function Chat({ socket, sessionId, messages, setGamePhase }) {
       setMessage('');
     }
   };
-
-  // When time is up, move to the guess phase
-  useEffect(() => {
-    if (timeLeft === 0) {
-      setGamePhase('guess');
-    }
-  }, [timeLeft, setGamePhase]);
 
   return (
     <div className="w-full max-w-md bg-white p-4 rounded shadow">
