@@ -12,7 +12,7 @@ function VideoChat({ sessionId, partnerId }) {
     console.log('VideoChat useEffect, sessionId:', sessionId, 'partnerId:', partnerId);
 
     const peerInstance = new Peer(sessionId, {
-      host: 'awe-backend.onrender.com',
+      host: 'https://awe-qztc.onrender.com',
       port: 443,
       path: '/peerjs',
       secure: true,
