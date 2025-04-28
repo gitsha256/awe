@@ -3,34 +3,46 @@ const { Server } = require('socket.io');
 const mongoose = require('mongoose');
 const OpenAI = require('openai');
 const cors = require('cors');
+const { ExpressPeerServer } = require('peer');
 require('dotenv').config();
 
 const app = express();
 const server = require('http').createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: 'http://localhost:3000',
+    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
     methods: ['GET', 'POST'],
     credentials: true,
   },
 });
 
+// PeerJS Server
+const peerServer = ExpressPeerServer(server, {
+  debug: true,
+  path: '/peerjs',
+});
+app.use('/peerjs', peerServer);
+
 app.use(cors({
-  origin: 'http://localhost:3000',
+  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
   methods: ['GET', 'POST'],
   credentials: true,
 }));
 app.use(express.json());
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'Server running', uptime: process.uptime() });
+});
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const sessions = new Map();
-const waiting = [];
-const activeChats = new Set();
+mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log('MongoDB connected'))
+  .catch((err) => console.error('MongoDB connection error:', err));
 
-// Define User schema and model
 const userSchema = new mongoose.Schema({
   sessionId: String,
   score: Number,
@@ -39,7 +51,6 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', userSchema);
 
-// API routes
 app.get('/badges/:sessionId', async (req, res) => {
   try {
     console.log('Fetching badges for sessionId:', req.params.sessionId);
@@ -62,7 +73,10 @@ app.get('/leaderboard', async (req, res) => {
   }
 });
 
-// Socket.IO connections
+const sessions = new Map();
+const waiting = [];
+const activeChats = new Set();
+
 io.on('connection', (socket) => {
   console.log('Socket.IO client connected:', socket.id);
 
@@ -120,19 +134,17 @@ io.on('connection', (socket) => {
 
   socket.on('guess', async ({ sessionId, partnerId, guess }) => {
     console.log('Guess received:', { sessionId, partnerId, guess });
-    const correct = (partnerId !== 'AI') === guess;
+    const correct = partnerId !== 'AI' === guess;
     const user = await User.findOne({ sessionId });
-    if (user) {
-      user.guesses.push({ partnerId, guess, correct });
-      if (correct) {
-        user.score += 1;
-        if (user.guesses.filter((g) => !g.guess && g.correct).length >= 5 && !user.badges.includes('AI Hunter')) {
-          user.badges.push('AI Hunter');
-        }
+    user.guesses.push({ partnerId, guess, correct });
+    if (correct) {
+      user.score += 1;
+      if (user.guesses.filter((g) => !g.guess && g.correct).length >= 5) {
+        user.badges.push('AI Hunter');
       }
-      await user.save();
-      socket.emit('guessResult', { correct, isHuman: partnerId !== 'AI' });
     }
+    await user.save();
+    socket.emit('guessResult', { correct, isHuman: partnerId !== 'AI' });
     activeChats.delete(sessionId);
   });
 
@@ -145,7 +157,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Timer to auto end chats
 setInterval(() => {
   activeChats.forEach((sessionId) => {
     const socket = sessions.get(sessionId);
@@ -155,16 +166,7 @@ setInterval(() => {
       activeChats.delete(sessionId);
     }
   });
-}, 30000);
+}, 120000);
 
-// Connect to MongoDB and then start server
-mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true })
-  .then(() => {
-    console.log('MongoDB connected');
-    const PORT = process.env.PORT || 4000;
-    server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-  })
-  .catch((err) => {
-    console.error('MongoDB connection error:', err.message);
-    process.exit(1); // Exit the app if MongoDB connection fails
-  });
+const PORT = process.env.PORT || 4000;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
