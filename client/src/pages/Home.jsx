@@ -2,18 +2,22 @@ import React, { useState, useEffect } from 'react';
 import { io } from 'socket.io-client';
 import VideoChat from '../components/VideoChat';
 import Leaderboard from '../components/Leaderboard';
+import { v4 as uuidv4 } from 'uuid';
 
 function Home() {
   const [state, setState] = useState('waiting');
-  const [sessionId, setSessionId] = useState('lz57wcgk6s'); // Replace with actual sessionId logic
+  const [sessionId, setSessionId] = useState(uuidv4());
   const [partnerId, setPartnerId] = useState(null);
   const [error, setError] = useState(null);
   const [badges, setBadges] = useState([]);
 
   useEffect(() => {
-    const socket = io('https://awe-backend.onrender.com', {
+    const socket = io('https://awe-qztc.onrender.com', {
       transports: ['websocket', 'polling'],
       withCredentials: true,
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
     });
 
     socket.on('connect', () => {
@@ -67,10 +71,11 @@ function Home() {
 
     const fetchBadges = async () => {
       try {
-        const res = await fetch(`https://awe-backend.onrender.com/badges${sessionId}`, {
+        const res = await fetch(`https://awe-qztc.onrender.com/badges/${sessionId}`, {
           mode: 'cors',
           credentials: 'include',
         });
+        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
         const data = await res.json();
         console.log('Badges fetched:', data);
         setBadges(data.badges);
