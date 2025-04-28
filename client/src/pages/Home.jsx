@@ -1,134 +1,138 @@
 import React, { useState, useEffect } from 'react';
 import { io } from 'socket.io-client';
-import VideoChat from '../components/VideoChat';
-import Leaderboard from '../components/Leaderboard';
-import { v4 as uuidv4 } from 'uuid';
 
-function Home() {
-  const [state, setState] = useState('waiting');
-  const [sessionId, setSessionId] = useState(uuidv4());
-  const [partnerId, setPartnerId] = useState(null);
-  const [error, setError] = useState(null);
-  const [badges, setBadges] = useState([]);
+const Home = () => {
+  const [sessionId, setSessionId] = useState('');
+  const [partnerId, setPartnerId] = useState('');
+  const [isHuman, setIsHuman] = useState(false);
+  const [messageInput, setMessageInput] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [timeUp, setTimeUp] = useState(false);
+  const [guessMade, setGuessMade] = useState(false);
+  const [guessResult, setGuessResult] = useState(null);
 
   useEffect(() => {
-    console.log('Initializing Socket.IO for sessionId:', sessionId);
+    // Generate session ID
+    const id = crypto.randomUUID();
+    setSessionId(id);
+
+    // Initialize socket connection
     const socket = io('https://awe-qztc.onrender.com', {
-      transports: ['websocket', 'polling'],
+      transports: ['websocket'],
       withCredentials: true,
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
     });
 
-    socket.on('connect', () => {
-      console.log('Socket.IO connected:', socket.id);
-      socket.emit('join', sessionId);
-    });
+    // Emit 'join' event when socket is ready
+    socket.emit('join', id);
 
-    socket.on('error', (err) => {
-      console.error('Socket.IO error:', err);
-      setError(`Failed to connect to server: ${err.message || err}`);
-    });
-
+    // Handle 'matched' event from server
     socket.on('matched', ({ partnerId, isHuman }) => {
-      console.log('Matched:', { partnerId, isHuman });
       setPartnerId(partnerId);
-      setState('chatting');
+      setIsHuman(isHuman);
+      setMessages([]);
+      setTimeUp(false);
+      setGuessMade(false);
+      setGuessResult(null);
     });
 
+    // Handle incoming messages
     socket.on('message', ({ sender, text }) => {
-      console.log('Message received:', { sender, text });
-      // Handle chat messages (add to UI if needed)
+      setMessages((prev) => [...prev, { sender, text }]);
     });
 
+    // Handle 'timeUp' event
     socket.on('timeUp', () => {
-      console.log('Time up received');
-      setState('guessing');
+      setTimeUp(true);
     });
 
+    // Handle 'guessResult' event
     socket.on('guessResult', ({ correct, isHuman }) => {
-      console.log('Guess result:', { correct, isHuman });
-      if (correct && isHuman) {
-        setState('video');
-        console.log('Transitioning to video state');
-      } else {
-        setState('waiting');
-        setPartnerId(null);
-      }
+      setGuessResult({ correct, isHuman });
     });
 
+    // Handle partner disconnection
     socket.on('partnerDisconnected', () => {
-      console.log('Partner disconnected');
-      setState('waiting');
-      setPartnerId(null);
-      setError('Partner disconnected, waiting for a new match...');
+      alert('Partner disconnected. Finding new partner...');
+      window.location.reload(); // simple reload to rejoin
     });
 
-    socket.on('disconnect', () => {
-      console.log('Socket.IO disconnected');
-      setError('Disconnected from server');
-    });
-
+    // Cleanup on component unmount
     return () => {
-      console.log('Cleaning up Socket.IO');
       socket.disconnect();
     };
-  }, [sessionId]);
+  }, []); // Empty dependency array means this effect runs once when the component mounts
 
-  useEffect(() => {
-    console.log('Home rendering, state:', state, 'sessionId:', sessionId, 'error:', error);
+  const sendMessage = () => {
+    if (messageInput.trim() && partnerId) {
+      socket.emit('message', { sessionId, text: messageInput });
+      setMessages((prev) => [...prev, { sender: 'You', text: messageInput }]);
+      setMessageInput('');
+    }
+  };
 
-    const fetchBadges = async () => {
-      try {
-        const res = await fetch(`https://awe-qztc.onrender.com/badges/${sessionId}`, {
-          mode: 'cors',
-          credentials: 'include',
-        });
-        if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
-        const data = await res.json();
-        console.log('Badges fetched:', data);
-        setBadges(data.badges);
-      } catch (err) {
-        console.error('Error fetching badges:', err);
-      }
-    };
-
-    fetchBadges();
-  }, [sessionId, state]);
-
-  if (error) {
-    return (
-      <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center">
-        <h2 className="text-2xl text-red-600">Error</h2>
-        <p>{error}</p>
-        <button
-          onClick={() => {
-            setError(null);
-            setState('waiting');
-            setSessionId(uuidv4());
-          }}
-          className="mt-4 bg-blue-500 text-white p-2 rounded"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
+  const makeGuess = (guess) => {
+    if (!guessMade) {
+      socket.emit('guess', { sessionId, partnerId, guess });
+      setGuessMade(true);
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center">
-      {state === 'waiting' && <h2>Waiting for match...</h2>}
-      {state === 'chatting' && <h2>Chatting with {partnerId}</h2>}
-      {state === 'guessing' && <h2>Guessing...</h2>}
-      {state === 'video' && <VideoChat sessionId={sessionId} partnerId={partnerId} />}
-      <Leaderboard />
-      <div>
-        <h3>Badges</h3>
-        <ul>{badges.map((badge, i) => <li key={i}>{badge}</li>)}</ul>
+    <div style={{ padding: '20px' }}>
+      <h1>Chat Game</h1>
+
+      <div style={{ marginBottom: '10px' }}>
+        <strong>Session ID:</strong> {sessionId.slice(0, 8)}
       </div>
+
+      <div style={{ marginBottom: '10px' }}>
+        {partnerId ? (
+          <div>
+            <p><strong>Partner ID:</strong> {partnerId === 'AI' ? '🤖 AI' : partnerId.slice(0, 8)}</p>
+            <p>{isHuman ? 'You are chatting with a human 🧑‍🤝‍🧑' : 'You are chatting with an AI 🤖'}</p>
+          </div>
+        ) : (
+          <p>Looking for a partner...</p>
+        )}
+      </div>
+
+      <div style={{ border: '1px solid #ccc', padding: '10px', height: '300px', overflowY: 'scroll', marginBottom: '10px' }}>
+        {messages.map((m, idx) => (
+          <div key={idx}><strong>{m.sender}:</strong> {m.text}</div>
+        ))}
+      </div>
+
+      {!timeUp && partnerId && (
+        <>
+          <input
+            type="text"
+            value={messageInput}
+            onChange={(e) => setMessageInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+            placeholder="Type your message..."
+            style={{ width: '80%' }}
+          />
+          <button onClick={sendMessage} style={{ marginLeft: '10px' }}>Send</button>
+        </>
+      )}
+
+      {timeUp && !guessMade && (
+        <div style={{ marginTop: '20px' }}>
+          <h3>Time's up! Make your guess:</h3>
+          <button onClick={() => makeGuess(true)}>I think it was a Human 🧑‍🤝‍🧑</button>
+          <button onClick={() => makeGuess(false)} style={{ marginLeft: '10px' }}>I think it was an AI 🤖</button>
+        </div>
+      )}
+
+      {guessResult && (
+        <div style={{ marginTop: '20px' }}>
+          <h3>{guessResult.correct ? '✅ Correct!' : '❌ Wrong!'}</h3>
+          <p>Your partner was {guessResult.isHuman ? 'a Human 🧑‍🤝‍🧑' : 'an AI 🤖'}.</p>
+          <button onClick={() => window.location.reload()}>Start New Chat</button>
+        </div>
+      )}
     </div>
   );
-}
+};
 
 export default Home;
