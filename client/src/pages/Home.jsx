@@ -10,39 +10,53 @@ const Home = () => {
   const [timeUp, setTimeUp] = useState(false);
   const [guessMade, setGuessMade] = useState(false);
   const [guessResult, setGuessResult] = useState(null);
+  const [timeUpMessage, setTimeUpMessage] = useState('');
 
   useEffect(() => {
     // Generate session ID
     const id = crypto.randomUUID();
     setSessionId(id);
 
+    // Determine the backend URL based on the environment
+    const backendUrl =
+      process.env.NODE_ENV === 'production'
+        ? 'https://awe-qztc.onrender.com' // Production URL
+        : 'http://localhost:4000'; // Local development URL
+
     // Initialize socket connection
-    const socket = io('https://awe-qztc.onrender.com', {
+    const socket = io(backendUrl, {
       transports: ['websocket'],
       withCredentials: true,
     });
 
     // Emit 'join' event when socket is ready
-    socket.emit('join', id);
+    socket.on('connect', () => {
+      console.log(`Socket.IO connected: ${socket.id}`);
+      socket.emit('join', id);
+    });
 
     // Handle 'matched' event from server
     socket.on('matched', ({ partnerId, isHuman }) => {
+      console.log('Matched event received:', { partnerId, isHuman });
       setPartnerId(partnerId);
       setIsHuman(isHuman);
       setMessages([]);
       setTimeUp(false);
       setGuessMade(false);
       setGuessResult(null);
+      setTimeUpMessage('');
     });
 
     // Handle incoming messages
     socket.on('message', ({ sender, text }) => {
+      console.log(`Received message from ${sender}: ${text}`);
       setMessages((prev) => [...prev, { sender, text }]);
     });
 
     // Handle 'timeUp' event
     socket.on('timeUp', () => {
       setTimeUp(true);
+      setTimeUpMessage("Time's up! Make your guess:");
     });
 
     // Handle 'guessResult' event
@@ -53,14 +67,14 @@ const Home = () => {
     // Handle partner disconnection
     socket.on('partnerDisconnected', () => {
       alert('Partner disconnected. Finding new partner...');
-      window.location.reload(); // simple reload to rejoin
+      window.location.reload();
     });
 
     // Cleanup on component unmount
     return () => {
       socket.disconnect();
     };
-  }, []); // Empty dependency array means this effect runs once when the component mounts
+  }, []);
 
   const sendMessage = () => {
     if (messageInput.trim() && partnerId) {
@@ -88,17 +102,35 @@ const Home = () => {
       <div style={{ marginBottom: '10px' }}>
         {partnerId ? (
           <div>
-            <p><strong>Partner ID:</strong> {partnerId === 'AI' ? '🤖 AI' : partnerId.slice(0, 8)}</p>
+            <p>
+              <strong>Partner ID:</strong> {partnerId === 'AI' ? '🤖 AI' : partnerId.slice(0, 8)}
+            </p>
             <p>{isHuman ? 'You are chatting with a human 🧑‍🤝‍🧑' : 'You are chatting with an AI 🤖'}</p>
           </div>
         ) : (
-          <p>Looking for a partner...</p>
+          <p>Hunting</p>
         )}
       </div>
 
-      <div style={{ border: '1px solid #ccc', padding: '10px', height: '300px', overflowY: 'scroll', marginBottom: '10px' }}>
+      {timeUpMessage && (
+        <div style={{ marginTop: '20px', color: 'red', fontWeight: 'bold' }}>
+          {timeUpMessage}
+        </div>
+      )}
+
+      <div
+        style={{
+          border: '1px solid #ccc',
+          padding: '10px',
+          height: '300px',
+          overflowY: 'scroll',
+          marginBottom: '10px',
+        }}
+      >
         {messages.map((m, idx) => (
-          <div key={idx}><strong>{m.sender}:</strong> {m.text}</div>
+          <div key={idx}>
+            <strong>{m.sender}:</strong> {m.text}
+          </div>
         ))}
       </div>
 
@@ -112,7 +144,9 @@ const Home = () => {
             placeholder="Type your message..."
             style={{ width: '80%' }}
           />
-          <button onClick={sendMessage} style={{ marginLeft: '10px' }}>Send</button>
+          <button onClick={sendMessage} style={{ marginLeft: '10px' }}>
+            Send
+          </button>
         </>
       )}
 
@@ -120,7 +154,9 @@ const Home = () => {
         <div style={{ marginTop: '20px' }}>
           <h3>Time's up! Make your guess:</h3>
           <button onClick={() => makeGuess(true)}>I think it was a Human 🧑‍🤝‍🧑</button>
-          <button onClick={() => makeGuess(false)} style={{ marginLeft: '10px' }}>I think it was an AI 🤖</button>
+          <button onClick={() => makeGuess(false)} style={{ marginLeft: '10px' }}>
+            I think it was an AI 🤖
+          </button>
         </div>
       )}
 

@@ -1,109 +1,126 @@
-import { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import Peer from 'peerjs';
 
-function VideoChat({ sessionId, partnerId, peerId, remotePeerId, onPeerIdGenerated }) {
+const VideoChat = ({ sessionId, partnerId, peerId, remotePeerId, onPeerIdGenerated }) => {
+  const [peer, setPeer] = useState(null);
+  const [connectionError, setConnectionError] = useState(null);
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
-  const peerInstance = useRef(null);
 
   useEffect(() => {
-    // Fallback peer ID if sessionId is undefined
-    const peerIdValue = sessionId ? `peer-${sessionId}` : `peer-${Math.random().toString(36).substr(2, 9)}`;
-    console.log(`Initializing PeerJS with ID: ${peerIdValue}, sessionId: ${sessionId}`);
-
-    const peer = new Peer(peerIdValue, {
+    console.log('Initializing PeerJS with sessionId:', sessionId, 'partnerId:', partnerId);
+    // Initialize PeerJS with explicit ID and retry logic
+    const peerId = `peer-${sessionId}`;
+    const peerInstance = new Peer(peerId, {
       host: 'localhost',
       port: 4000,
       path: '/peerjs',
-      debug: 3,
+      debug: 3, // Maximum debug level
+      secure: false,
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+        ],
+      },
     });
 
-    peerInstance.current = peer;
-
-    peer.on('open', (id) => {
-      console.log('PeerJS: My peer ID is', id);
+    peerInstance.on('open', (id) => {
+      console.log(`PeerJS ID generated: ${id}`);
+      setConnectionError(null);
       onPeerIdGenerated(id);
+      setPeer(peerInstance);
     });
 
-    peer.on('call', (call) => {
-      console.log('PeerJS: Receiving call');
-      navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-        .then((stream) => {
-          localVideoRef.current.srcObject = stream;
-          localVideoRef.current.play();
-          call.answer(stream);
-          call.on('stream', (remoteStream) => {
-            remoteVideoRef.current.srcObject = remoteStream;
-            remoteVideoRef.current.play();
-          });
-          call.on('error', (err) => {
-            console.error('Call error:', err);
-          });
-        })
-        .catch((err) => {
-          console.error('Media error:', err);
-          alert('Failed to access camera/microphone. Please grant permissions.');
-        });
+    peerInstance.on('error', (err) => {
+      console.error('PeerJS error:', err.type, err.message);
+      setConnectionError(`PeerJS error: ${err.message}`);
+      // Retry connection after 5 seconds
+      setTimeout(() => {
+        console.log('Retrying PeerJS connection...');
+        peerInstance.reconnect();
+      }, 5000);
     });
 
-    peer.on('error', (err) => {
-      console.error('PeerJS error:', err);
-      alert('PeerJS error: ' + err.message);
+    peerInstance.on('disconnected', () => {
+      console.log('PeerJS disconnected, attempting to reconnect...');
+      peerInstance.reconnect();
     });
 
     return () => {
-      peer.destroy();
+      console.log('Cleaning up PeerJS, ID:', peerId);
+      peerInstance.destroy();
     };
   }, [sessionId, onPeerIdGenerated]);
 
   useEffect(() => {
-    if (remotePeerId && peerId && peerInstance.current) {
-      // Only initiate call if sessionId is lexicographically smaller
-      if (sessionId && sessionId < partnerId) {
-        console.log(`Initiating call to ${remotePeerId}`);
+    if (peer && remotePeerId) {
+      console.log('Starting video call with remotePeerId:', remotePeerId);
+      navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+        .then((stream) => {
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
+          }
+
+          const call = peer.call(remotePeerId, stream);
+          call.on('stream', (remoteStream) => {
+            console.log('Received remote stream');
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = remoteStream;
+            }
+          });
+          call.on('error', (err) => {
+            console.error('Call error:', err);
+            setConnectionError(`Call error: ${err.message}`);
+          });
+          call.on('close', () => {
+            console.log('Call closed');
+            setConnectionError('Call ended');
+          });
+        })
+        .catch((err) => {
+          console.error('Failed to get user media:', err);
+          setConnectionError(`Media error: ${err.message}`);
+        });
+
+      peer.on('call', (call) => {
+        console.log('Receiving incoming call');
         navigator.mediaDevices.getUserMedia({ video: true, audio: true })
           .then((stream) => {
-            localVideoRef.current.srcObject = stream;
-            localVideoRef.current.play();
-            const call = peerInstance.current.call(remotePeerId, stream);
+            if (localVideoRef.current) {
+              localVideoRef.current.srcObject = stream;
+            }
+            call.answer(stream);
             call.on('stream', (remoteStream) => {
-              remoteVideoRef.current.srcObject = remoteStream;
-              remoteVideoRef.current.play();
+              console.log('Received remote stream');
+              if (remoteVideoRef.current) {
+                remoteVideoRef.current.srcObject = remoteStream;
+              }
             });
             call.on('error', (err) => {
               console.error('Call error:', err);
+              setConnectionError(`Call error: ${err.message}`);
+            });
+            call.on('close', () => {
+              console.log('Call closed');
+              setConnectionError('Call ended');
             });
           })
           .catch((err) => {
-            console.error('Media error:', err);
-            alert('Failed to access camera/microphone. Please grant permissions.');
+            console.error('Failed to get user media:', err);
+            setConnectionError(`Media error: ${err.message}`);
           });
-      } else {
-        console.log(`Waiting for call from ${remotePeerId}`);
-      }
+      });
     }
-  }, [remotePeerId, peerId, sessionId, partnerId]);
+  }, [peer, remotePeerId]);
 
   return (
-    <div className="w-full max-w-4xl bg-white p-4 rounded shadow">
-      <h2 className="text-xl mb-4">Video Chat</h2>
-      <p>Enjoy your conversation!</p>
-      <div className="flex space-x-4">
-        <div>
-          <h3>My Video</h3>
-          <video ref={localVideoRef} muted className="w-64 h-48 border" />
-        </div>
-        <div>
-          <h3>Partner's Video</h3>
-          <video ref={remoteVideoRef} className="w-64 h-48 border" />
-        </div>
-      </div>
-      <div className="mt-4">
-        <p>My Peer ID: {peerId}</p>
-        <p>Partner's Peer ID: {remotePeerId}</p>
-      </div>
+    <div>
+      <h2>Video Chat</h2>
+      {connectionError && <p style={{ color: 'red' }}>{connectionError}</p>}
+      <video ref={localVideoRef} autoPlay muted style={{ width: '300px' }} />
+      <video ref={remoteVideoRef} autoPlay style={{ width: '300px' }} />
     </div>
   );
-}
+};
 
 export default VideoChat;

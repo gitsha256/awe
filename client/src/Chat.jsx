@@ -1,32 +1,65 @@
 import { useState, useEffect } from 'react';
 
-function Chat({ socket, sessionId, messages }) {
+function Chat({ socket, sessionId, messages, setMessages }) {
   const [message, setMessage] = useState('');
   const [timeLeft, setTimeLeft] = useState(120); // 2 minutes
   const [isChatActive, setIsChatActive] = useState(true);
 
   useEffect(() => {
+    // Sync timer with server
     const timer = setInterval(() => {
-      setTimeLeft((prev) => (prev > 0 ? prev - 1 : 0));
+      setTimeLeft((prev) => (prev > 0 && isChatActive ? prev - 1 : 0));
     }, 1000);
 
-    socket.on('timeUp', () => {
-      console.log('Received timeUp event');
+    // Handle incoming messages
+    const handleMessage = ({ sender, text }) => {
+      console.log(`Received message from ${sender}: ${text}`);
+      setMessages((prev) => [...prev, { sender, text }]);
+    };
+
+    // Handle timeUp event
+    const handleTimeUp = () => {
+      console.log('Received timeUp event in Chat');
       setIsChatActive(false);
       setTimeLeft(0);
-    });
+      setMessages((prev) => [...prev, { sender: 'System', text: 'Time is up!' }]);
+    };
+
+    // Handle partner disconnection
+    const handlePartnerDisconnected = () => {
+      console.log('Partner disconnected in Chat');
+      setIsChatActive(false);
+      setMessages((prev) => [...prev, { sender: 'System', text: 'Partner disconnected.' }]);
+    };
+
+    // Handle errors
+    const handleError = (err) => {
+      console.error('Chat error:', err.message);
+      setMessages((prev) => [...prev, { sender: 'System', text: `Error: ${err.message}` }]);
+    };
+
+    // Register socket event listeners
+    socket.on('message', handleMessage);
+    socket.on('timeUp', handleTimeUp);
+    socket.on('partnerDisconnected', handlePartnerDisconnected);
+    socket.on('error', handleError);
 
     return () => {
       clearInterval(timer);
-      socket.off('timeUp');
+      socket.off('message', handleMessage);
+      socket.off('timeUp', handleTimeUp);
+      socket.off('partnerDisconnected', handlePartnerDisconnected);
+      socket.off('error', handleError);
+      console.log('Chat cleanup, sessionId:', sessionId);
     };
-  }, [socket]);
+  }, [socket, sessionId, setMessages, isChatActive]);
 
   const sendMessage = (e) => {
     e.preventDefault();
     if (message.trim() && isChatActive) {
       console.log(`Sending message from ${sessionId}: ${message}`);
-      socket.emit('message', { sessionId, text: message });
+      socket.emit('message', { sender: sessionId, text: message });
+      setMessages((prev) => [...prev, { sender: sessionId, text: message }]);
       setMessage('');
     }
   };

@@ -5,59 +5,47 @@ const OpenAI = require('openai');
 const cors = require('cors');
 const { ExpressPeerServer } = require('peer');
 require('dotenv').config();
+const config = require('./config');
+
+// Enable Socket.IO and PeerJS debugging
+process.env.DEBUG = 'socket.io:*,peer:*,engine.io:*';
 
 const app = express();
 const server = require('http').createServer(app);
 
-// Define allowed origins based on environment
-const allowedOrigins = process.env.NODE_ENV === 'production'
-  ? ['https://awe-sand.vercel.app']
-  : ['http://localhost:3000', 'https://awe-sand.vercel.app'];
-
 // CORS configuration for Express
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin && process.env.NODE_ENV !== 'production') return callback(null, true);
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      console.error(`CORS blocked for origin: ${origin}`);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: config.cors.origins,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
 }));
-
-// Handle preflight requests explicitly
+app.use((req, res, next) => {
+  console.log(`CORS request: ${req.method} ${req.url}, Origin: ${req.headers.origin}`);
+  next();
+});
 app.options('*', cors());
 
 // Socket.IO CORS configuration
 const io = new Server(server, {
   cors: {
-    origin: (origin, callback) => {
-      if (!origin && process.env.NODE_ENV !== 'production') return callback(null, true);
-      if (allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        console.error(`Socket.IO CORS blocked for origin: ${origin}`);
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
+    origin: config.cors.origins,
     methods: ['GET', 'POST'],
     credentials: true,
   },
-  transports: ['websocket', 'polling'],
-  allowEIO3: true,
+  transports: ['polling', 'websocket'],
 });
 
-// PeerJS server setup (temporarily disabled for testing)
-// const peerServer = ExpressPeerServer(server, {
-//   debug: true,
-//   path: '/peerjs',
-// });
-// app.use('/peerjs', peerServer);
+// PeerJS server setup
+const peerServer = ExpressPeerServer(server, {
+  debug: true,
+  path: '/peerjs',
+  allow_discovery: true,
+});
+app.use('/peerjs', (req, res, next) => {
+  console.log(`PeerJS request: ${req.method} ${req.url}`);
+  next();
+}, peerServer);
 
 app.use(express.json());
 
@@ -66,18 +54,22 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'Server running', uptime: process.uptime() });
 });
 
-// Debug route for waiting users
+// Debug routes
 app.get('/debug/waiting', (req, res) => {
   res.json({ waiting: waiting.length, sessionIds: waiting });
 });
-
-// OpenAI setup
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+app.get('/debug/state', (req, res) => {
+  res.json({
+    waiting,
+    activeChats: [...activeChats],
+    sessions: [...sessions.keys()],
+    partners: [...partners.entries()],
+    peerIds: [...peerIds.entries()],
+  });
 });
 
 // MongoDB connection
-mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/awe-game')
   .then(() => console.log('MongoDB connected'))
   .catch((err) => console.error('MongoDB connection error:', err));
 
@@ -90,24 +82,9 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', userSchema);
 
-// Route to get badges of a user by sessionId
-app.get('/badges/:sessionId', async (req, res) => {
-  try {
-    const user = await User.findOne({ sessionId: req.params.sessionId });
-    res.json({ badges: user ? user.badges : [] });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Route to get leaderboard
-app.get('/leaderboard', async (req, res) => {
-  try {
-    const users = await User.find().sort({ score: -1 }).limit(10);
-    res.json(users.map((u, i) => ({ rank: i + 1, player: u.sessionId.slice(0, 8), score: u.score })));
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+// Initialize OpenAI
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 // Session management
@@ -115,57 +92,149 @@ const sessions = new Map();
 const waiting = [];
 const activeChats = new Set();
 const partners = new Map();
+const videoChatSessions = new Set();
+const peerIds = new Map();
+
+// Generate AI partner ID
+const generateAIPartnerId = () => `AI-${Math.random().toString(36).substr(2, 9)}`;
+
+// Handle AI responses
+async function generateAIResponse(message) {
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-3.5-turbo',
+      messages: [
+        { role: 'system', content: 'You are a conversational AI pretending to be a human in a chat game. Respond naturally and casually.' },
+        { role: 'user', content: message },
+      ],
+      max_tokens: 150,
+      temperature: 0.7,
+    });
+    return completion.choices[0].message.content.trim();
+  } catch (err) {
+    console.error('OpenAI error:', err.message);
+    return 'Sorry, I had an issue processing that. Try again!';
+  }
+}
 
 // Socket.IO connection
 io.on('connection', (socket) => {
   console.log(`Socket connected: ${socket.id}, Handshake:`, socket.handshake);
 
+  // Clean up stale sessions
+  const cleanupStaleSessions = () => {
+    console.log('Cleaning up stale sessions');
+    for (const [sessionId, storedSocket] of sessions.entries()) {
+      if (!storedSocket.connected) {
+        console.log(`Removing stale session: ${sessionId}`);
+        sessions.delete(sessionId);
+        activeChats.delete(sessionId);
+        videoChatSessions.delete(sessionId);
+        partners.delete(sessionId);
+        peerIds.delete(sessionId);
+        const index = waiting.indexOf(sessionId);
+        if (index !== -1) {
+          waiting.splice(index, 1);
+        }
+      }
+    }
+  };
+
+  const joinTimeout = setTimeout(() => {
+    if (!socket.sessionId) {
+      console.warn(`No join event received for socket ${socket.id} after 15s`);
+      socket.emit('error', { message: 'No join event received. Please refresh.' });
+      socket.disconnect(true);
+    }
+  }, 15000);
+
   socket.on('error', (err) => {
-    console.error(`Socket error for ${socket.id}:`, err.message);
+    console.error(`Socket error for ${socket.id}:`, err.message, err.stack);
+    clearTimeout(joinTimeout);
   });
 
   socket.on('connect_error', (err) => {
-    console.error(`Socket connect error for ${socket.id}:`, err.message);
+    console.error(`Socket connect error for ${socket.id}:`, err.message, err.stack);
+    clearTimeout(joinTimeout);
   });
 
-  // User joins the server
-  socket.on('join', (sessionId) => {
-    console.log(`User ${sessionId} joined, socket: ${socket.id}`);
-    // Prevent overwriting existing session
-    if (sessions.has(sessionId)) {
-      console.log(`Session ${sessionId} already exists, updating socket`);
-      const oldSocket = sessions.get(sessionId);
-      oldSocket.disconnect(); // Disconnect old socket
-    }
-    sessions.set(sessionId, socket);
-    socket.sessionId = sessionId;
-
-    // Create a new user in the database if doesn't exist
-    User.findOne({ sessionId }).then((user) => {
-      if (!user) {
-        new User({ sessionId, score: 0, badges: [], guesses: [] }).save();
-        console.log(`Created new user: ${sessionId}`);
+  socket.on('disconnect', (reason) => {
+    console.log(`Socket disconnected: ${socket.id}, Reason: ${reason}, SessionId: ${socket.sessionId || 'undefined'}`);
+    clearTimeout(joinTimeout);
+    const sessionId = socket.sessionId;
+    if (sessionId) {
+      const partnerId = partners.get(sessionId);
+      if (partnerId && partnerId !== 'AI') {
+        const partnerSocket = sessions.get(partnerId);
+        if (partnerSocket && partnerSocket.connected) {
+          partnerSocket.emit('partnerDisconnected');
+          console.log(`Notified ${partnerId} of ${sessionId} disconnection`);
+          partners.delete(partnerId);
+        }
       }
-    });
-
-    // Clean up disconnected users from waiting
-    for (let i = waiting.length - 1; i >= 0; i--) {
-      const waitingId = waiting[i];
-      if (!sessions.get(waitingId) || !sessions.get(waitingId).connected) {
-        waiting.splice(i, 1);
-        console.log(`Removed disconnected user ${waitingId} from waiting`);
+      sessions.delete(sessionId);
+      activeChats.delete(sessionId);
+      videoChatSessions.delete(sessionId);
+      partners.delete(sessionId);
+      peerIds.delete(sessionId);
+      const index = waiting.indexOf(sessionId);
+      if (index !== -1) {
+        waiting.splice(index, 1);
+        console.log(`Removed ${sessionId} from waiting on disconnect`);
       }
     }
+  });
 
-    // Check if user is already in waiting or activeChats to prevent duplicates
-    if (waiting.includes(sessionId) || activeChats.has(sessionId)) {
-      console.log(`User ${sessionId} already in waiting or active chat, ignoring join`);
+  socket.on('leave', (sessionId) => {
+    console.log(`Leave requested: sessionId=${sessionId}`);
+    const partnerId = partners.get(sessionId);
+    if (partnerId && partnerId !== 'AI') {
+      const partnerSocket = sessions.get(partnerId);
+      if (partnerSocket && partnerSocket.connected) {
+        partnerSocket.emit('partnerDisconnected');
+        console.log(`Notified ${partnerId} of ${sessionId} leave`);
+        partners.delete(partnerId);
+      }
+    }
+    sessions.delete(sessionId);
+    activeChats.delete(sessionId);
+    videoChatSessions.delete(sessionId);
+    partners.delete(sessionId);
+    peerIds.delete(sessionId);
+    const index = waiting.indexOf(sessionId);
+    if (index !== -1) {
+      waiting.splice(index, 1);
+      console.log(`Removed ${sessionId} from waiting on leave`);
+    }
+    socket.emit('left', { sessionId });
+  });
+
+  socket.on('join', async (sessionId) => {
+    console.log(`Join requested: sessionId=${sessionId}, socket=${socket.id}`);
+    clearTimeout(joinTimeout);
+    cleanupStaleSessions();
+
+    if (!sessionId || typeof sessionId !== 'string' || sessionId.trim() === '') {
+      console.error(`Invalid sessionId: ${sessionId}`);
+      socket.emit('error', { message: 'Invalid session ID. Please refresh.' });
+      socket.disconnect(true);
       return;
     }
 
-    // If there's a match in the waiting queue, pair them
+    const existingSocket = sessions.get(sessionId);
+    if (existingSocket && existingSocket.connected && existingSocket.id !== socket.id) {
+      console.log(`Duplicate sessionId detected: ${sessionId}, notifying existing socket`);
+      existingSocket.emit('error', { message: 'Session ID already in use. Generating new ID.' });
+      existingSocket.disconnect(true);
+      sessions.delete(sessionId);
+    }
+
+    sessions.set(sessionId, socket);
+    socket.sessionId = sessionId;
+
+    // Check if a human is waiting
     if (waiting.length > 0) {
-      const partnerId = waiting.pop();
+      const partnerId = waiting.shift();
       const partnerSocket = sessions.get(partnerId);
       if (partnerSocket && partnerSocket.connected) {
         console.log(`Matched ${sessionId} with human ${partnerId}`);
@@ -175,133 +244,120 @@ io.on('connection', (socket) => {
         activeChats.add(partnerId);
         partners.set(sessionId, partnerId);
         partners.set(partnerId, sessionId);
-        console.log(`Partner mapping: ${sessionId} <-> ${partnerId}`);
-        console.log(`Sessions map: ${[...sessions.keys()]}`);
       } else {
-        console.log(`Partner ${partnerId} disconnected, adding ${sessionId} to waiting`);
+        console.log(`Partner ${partnerId} disconnected, assigning AI to ${sessionId}`);
+        const aiPartnerId = generateAIPartnerId();
+        socket.emit('matched', { partnerId: aiPartnerId, isHuman: false });
+        activeChats.add(sessionId);
+        partners.set(sessionId, aiPartnerId);
+      }
+    } else {
+      const shouldMatchWithAI = Math.random() < 0.5;
+      console.log(`Matching decision for ${sessionId}: shouldMatchWithAI=${shouldMatchWithAI}, waiting=${waiting.length}`);
+      if (shouldMatchWithAI) {
+        console.log(`Assigning AI to ${sessionId}`);
+        const aiPartnerId = generateAIPartnerId();
+        socket.emit('matched', { partnerId: aiPartnerId, isHuman: false });
+        activeChats.add(sessionId);
+        partners.set(sessionId, aiPartnerId);
+      } else {
+        console.log(`No human partner available, adding ${sessionId} to waiting list`);
         waiting.push(sessionId);
       }
-    } else {
-      console.log(`No waiting users, adding ${sessionId} to waiting`);
-      waiting.push(sessionId);
     }
 
-    // If no match after 10 seconds, match with AI
+    // Set 2-minute timer for timeUp
     setTimeout(() => {
-      if (waiting.includes(sessionId) && sessions.get(sessionId) && sessions.get(sessionId).connected) {
-        waiting.splice(waiting.indexOf(sessionId), 1);
-        console.log(`No human match for ${sessionId}, matching with AI`);
-        socket.emit('matched', { partnerId: 'AI', isHuman: false });
-        activeChats.add(sessionId);
-        partners.set(sessionId, 'AI');
-        console.log(`Partner mapping: ${sessionId} -> AI`);
-      }
-    }, 300000);
-  });
-
-  // Message handling
-  socket.on('message', async ({ sessionId, text }) => {
-    const socket = sessions.get(sessionId);
-    if (!socket) {
-      console.error(`No socket found for sessionId: ${sessionId}`);
-      return;
-    }
-    const partnerId = partners.get(sessionId);
-    if (!partnerId) {
-      console.error(`No partner found for ${sessionId}`);
-      socket.emit('message', { sender: 'System', text: 'No partner assigned. Please rejoin.' });
-      return;
-    }
-    console.log(`Message from ${sessionId} to ${partnerId}: ${text}`);
-    console.log(`Current sessions: ${[...sessions.keys()]}, partners: ${[...partners.entries()]}`);
-    if (partnerId === 'AI') {
-      try {
-        const response = await openai.chat.completions.create({
-          model: 'gpt-3.5-turbo',
-          messages: [{ role: 'user', content: text }],
-        });
-        socket.emit('message', { sender: 'AI', text: response.choices[0].message.content });
-        console.log(`AI response to ${sessionId}: ${response.choices[0].message.content}`);
-      } catch (err) {
-        socket.emit('message', { sender: 'AI', text: 'Sorry, I had an error processing that.' });
-        console.error(`AI error for ${sessionId}:`, err.message);
-      }
-    } else {
-      const partnerSocket = sessions.get(partnerId);
-      if (partnerSocket) {
-        if (partnerSocket.connected) {
-          socket.emit('message', { sender: sessionId, text }); // Send to self
-          partnerSocket.emit('message', { sender: sessionId, text }); // Send to partner
-          console.log(`Message sent from ${sessionId} to ${partnerId} (socket: ${partnerSocket.id})`);
-        } else {
-          console.error(`Partner ${partnerId} socket not connected (socket: ${partnerSocket.id})`);
-          socket.emit('partnerDisconnected');
-          partners.delete(sessionId);
-          partners.delete(partnerId);
+      if (sessions.get(sessionId)) {
+        socket.emit('timeUp');
+        const partnerId = partners.get(sessionId);
+        if (partnerId && partnerId !== 'AI') {
+          const partnerSocket = sessions.get(partnerId);
+          if (partnerSocket) partnerSocket.emit('timeUp');
         }
-      } else {
-        console.error(`No socket found for partner ${partnerId}`);
-        socket.emit('partnerDisconnected');
-        partners.delete(sessionId);
-        partners.delete(partnerId);
       }
-    }
+    }, 120000); // 2 minutes
   });
 
-  // Guess handling
-  socket.on('guess', async ({ sessionId, partnerId, guess }) => {
-    const correct = partnerId !== 'AI' === guess;
-    const user = await User.findOne({ sessionId });
-    user.guesses.push({ partnerId, guess, correct });
-    if (correct) {
-      user.score += 1;
-    }
-    await user.save();
-    socket.emit('guessResult', { correct, isHuman: partnerId !== 'AI' });
-    activeChats.delete(sessionId);
-    partners.delete(sessionId);
-    partners.delete(partnerId);
-    console.log(`Guess by ${sessionId} for ${partnerId}: ${guess}, Correct: ${correct}`);
-  });
+  socket.on('message', async ({ sender, text }) => {
+    console.log(`Message received from ${sender}: ${text}`);
+    const partnerId = partners.get(sender);
 
-  // Disconnect handling
-  socket.on('disconnect', () => {
-    console.log(`Socket disconnected: ${socket.id}, sessionId: ${socket.sessionId}`);
-    const sessionId = socket.sessionId;
-    const partnerId = partners.get(sessionId);
-    if (partnerId && partnerId !== 'AI') {
+    if (!partnerId) {
+      console.error(`No partner found for sender: ${sender}`);
+      socket.emit('error', { message: 'No partner assigned. Please refresh.' });
+      return;
+    }
+
+    if (partnerId.startsWith('AI')) {
+      const aiResponse = await generateAIResponse(text);
+      socket.emit('message', { sender: partnerId, text: aiResponse });
+      console.log(`AI response sent to ${sender}: ${aiResponse}`);
+    } else {
       const partnerSocket = sessions.get(partnerId);
       if (partnerSocket && partnerSocket.connected) {
-        partnerSocket.emit('partnerDisconnected');
-        console.log(`Notified ${partnerId} of ${sessionId} disconnection`);
+        partnerSocket.emit('message', { sender, text });
+        console.log(`Relayed message to ${partnerId}: ${text}`);
+      } else {
+        console.error(`Partner ${partnerId} not connected`);
+        socket.emit('partnerDisconnected');
       }
     }
-    sessions.delete(sessionId);
-    activeChats.delete(sessionId);
-    partners.delete(sessionId);
-    partners.delete(partnerId);
-    const index = waiting.indexOf(sessionId);
-    if (index !== -1) {
-      waiting.splice(index, 1);
-      console.log(`Removed ${sessionId} from waiting on disconnect`);
+  });
+
+  socket.on('peerId', ({ sessionId, peerId, partnerId }) => {
+    console.log(`Received peerId from ${sessionId}: ${peerId} for partner ${partnerId}`);
+    peerIds.set(sessionId, peerId);
+    if (partnerId && !partnerId.startsWith('AI')) {
+      const partnerSocket = sessions.get(partnerId);
+      if (partnerSocket && partnerSocket.connected) {
+        partnerSocket.emit('receivePeerId', { peerId, fromSessionId: sessionId });
+        console.log(`Sent peerId ${peerId} to partner ${partnerId}`);
+      }
+    }
+  });
+
+  socket.on('guess', async ({ sessionId, partnerId, guess }) => {
+    console.log(`Guess received from ${sessionId}: partner=${partnerId}, guess=${guess ? 'human' : 'AI'}`);
+    const currentPartnerId = partners.get(sessionId);
+    if (!currentPartnerId || currentPartnerId !== partnerId) {
+      console.error(`Invalid guess: sessionId=${sessionId}, partnerId=${partnerId}, currentPartnerId=${currentPartnerId}`);
+      socket.emit.Print('error', { message: 'Invalid partner. Please refresh.' });
+      return;
+    }
+
+    const isPartnerHuman = !partnerId.startsWith('AI');
+    const isGuessCorrect = guess === isPartnerHuman;
+
+    // Store guess in MongoDB
+    try {
+      await User.updateOne(
+        { sessionId },
+        { $push: { guesses: { partnerId, guess, correct: isGuessCorrect } } },
+        { upsert: true }
+      );
+      console.log(`Stored guess for ${sessionId}: correct=${isGuessCorrect}`);
+    } catch (err) {
+      console.error('MongoDB error storing guess:', err);
+    }
+
+    // Notify the guessing client of the result
+    socket.emit('guessResult', { partnerId, isCorrect: isGuessCorrect, isPartnerHuman });
+
+    // If guess is correct and partner is human, unlock video chat
+    if (isGuessCorrect && isPartnerHuman) {
+      console.log(`Correct human guess by ${sessionId}, unlocking video chat with ${partnerId}`);
+      socket.emit('unlockVideoChat', { partnerId });
+      const partnerSocket = sessions.get(partnerId);
+      if (partnerSocket && partnerSocket.connected) {
+        partnerSocket.emit('unlockVideoChat', { partnerId: sessionId });
+        console.log(`Notified ${partnerId} to unlock video chat`);
+      }
     }
   });
 });
 
-// Time-out handling every 2 minutes for active chats
-setInterval(() => {
-  activeChats.forEach((sessionId) => {
-    const socket = sessions.get(sessionId);
-    if (socket && socket.connected) {
-      socket.emit('timeUp');
-      activeChats.delete(sessionId);
-      partners.delete(sessionId);
-      partners.delete(partners.get(sessionId));
-      console.log(`Time up for ${sessionId}, sent timeUp event`);
-    }
-  });
-}, 120000);
-
 // Start the server
-const PORT = process.env.PORT || 4000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(config.server.port, () => {
+  console.log(`Server running on ${config.server.url}`);
+});
